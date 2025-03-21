@@ -1,13 +1,20 @@
+
 import streamlit as st
 import pandas as pd
 import os
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
 
 class TaskManager:
     def __init__(self, file_name='tasks.csv'):
         self.file_name = file_name
         self.tasks = self._load_tasks()
-        self.priority_order = {"High": 3, "Medium": 2, "Low": 1}
+        self.label_encoder = LabelEncoder()
+        self._update_priority_numeric()
+        self.model = self._train_model()
 
     def _load_tasks(self):
         if os.path.exists(self.file_name):
@@ -15,38 +22,60 @@ class TaskManager:
             return tasks
         return pd.DataFrame(columns=['description', 'priority'])
 
+    def _update_priority_numeric(self):
+        if not self.tasks.empty:
+            self.tasks['priority_numeric'] = self.label_encoder.fit_transform(self.tasks['priority'])
+        else:
+            self.tasks['priority_numeric'] = pd.Series(dtype=int)
+
     def _save_tasks(self):
         self.tasks.to_csv(self.file_name, index=False)
 
+    def _train_model(self):
+        if len(self.tasks) > 1:
+            X = self.tasks['description']
+            y = self.tasks['priority_numeric']
+            X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+            model = make_pipeline(TfidfVectorizer(), MultinomialNB())
+            model.fit(X_train, y_train)
+            return model
+        return None
+
     def add_task(self, description, priority):
         priority = priority.capitalize()
-        if priority not in ["Low", "Medium", "High"]:
+        if priority not in ['Low', 'Medium', 'High']:
             return "Priority must be Low, Medium, or High"
         
         new_task = pd.DataFrame({'description': [description], 'priority': [priority]})
         self.tasks = pd.concat([self.tasks, new_task], ignore_index=True)
+        self._update_priority_numeric()
         self._save_tasks()
+        self.model = self._train_model()
         return "Task added successfully."
 
     def remove_task(self, index):
         if 0 <= index < len(self.tasks):
             self.tasks = self.tasks.drop(index).reset_index(drop=True)
+            self._update_priority_numeric()
             self._save_tasks()
+            self.model = self._train_model()
             return "Task removed successfully."
         return "Invalid task number."
 
     def list_tasks(self):
-        self.tasks["priority_numeric"] = self.tasks["priority"].map(self.priority_order)
-        return self.tasks.sort_values(by=["priority_numeric", self.tasks.index], ascending=[False, True]).reset_index(drop=True)
+        return self.tasks.sort_values(by='priority_numeric', ascending=False).reset_index(drop=True)
 
     def recommend_task(self):
-        if self.tasks.empty:
-            return "No tasks available for recommendation."
-        
-        sorted_tasks = self.list_tasks()  # Sorted by priority first, then by order of entry
-        return f"Recommended task: {sorted_tasks.iloc[0]['description']}"
+        if self.tasks.empty or self.model is None or len(self.tasks) < 2:
+            return "Not enough data for recommendations."
+        high_priority_tasks = self.tasks[self.tasks['priority'] == 'High']
+        if not high_priority_tasks.empty:
+            predictions = self.model.predict_proba(self.tasks['description'])
+            high_priority_prob = predictions[:, self.label_encoder.transform(['High'])[0]]
+            recommended_index = high_priority_prob.argmax()
+            return f"Recommended task: {self.tasks.iloc[recommended_index]['description']}"
+        return "No high-priority tasks available."
 
-# Streamlit UI
 st.set_page_config(page_title="Task Manager", layout="wide")
 st.title("📋 Task Management System")
 
@@ -63,7 +92,7 @@ if st.sidebar.button("Add Task"):
 st.header("Task List")
 tasks_df = task_manager.list_tasks()
 if not tasks_df.empty:
-    st.table(tasks_df.drop(columns=["priority_numeric"]))  # Hide numeric priority
+    st.table(tasks_df)
 else:
     st.info("No tasks available.")
 
